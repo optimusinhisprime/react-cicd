@@ -12,70 +12,100 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    name: Test Job
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "18"
-          cache: "npm"
-
-      - name: Install dependencies
-        run: npm ci --prefer-offline --no-audit
-
-      - name: Run tests
-        run: npm test
-
-  build_and_deploy_job:
-    needs: test
-    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'closed')
-    runs-on: ubuntu-latest
-    name: Build and Deploy Job
-    timeout-minutes: 15
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v3
         with:
           submodules: true
           lfs: false
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Cache node modules
+        uses: actions/cache@v4
         with:
-          node-version: "18"
-          cache: "npm"
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
 
       - name: Install dependencies
-        run: npm ci --prefer-offline --no-audit
+        run: npm ci
 
-      - name: Build Next.js application
-        run: |
-          npm run build
+      - name: Run tests
+        run: npm test
 
-      - name: Optimize build for upload
-        run: |
-          # Remove source maps and other large files to speed up upload
-          find .next -name "*.map" -type f -delete || true
-          find .next -name "*.log" -type f -delete || true
-          # Remove cache files that aren't needed for deployment
-          rm -rf .next/cache || true
-          # List the size to debug
-          du -sh .next
+  build:
+    runs-on: ubuntu-latest
+    name: Build Job
+    needs: test
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'closed')
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          submodules: true
+          lfs: false
 
-      - name: Build And Deploy
-        id: builddeploy
+      - name: Cache node modules
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build app
+        run: npm run build
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: .next
+
+  deploy:
+    runs-on: ubuntu-latest
+    name: Deploy Job
+    needs: build
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'closed')
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          submodules: true
+          lfs: false
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: .next
+
+      - name: Install OIDC Client from Core Package
+        run: npm install @actions/core@1.6.0 @actions/http-client
+
+      - name: Get Id Token
+        uses: actions/github-script@v6
+        id: idtoken
+        with:
+          script: |
+            const coredemo = require('@actions/core')
+            return await coredemo.getIDToken()
+          result-encoding: string
+
+      - name: Deploy to Azure Static Web Apps
+        id: deploy
         uses: Azure/static-web-apps-deploy@v1
         with:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_HAPPY_GROUND_016810010 }}
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
           action: "upload"
-          app_location: "/"
-          api_location: ""
-          output_location: ".next"
-          # Skip API build since you don't have one
-          skip_api_build: true
+          app_location: "/" # App source code path
+          api_location: "" # Api source code path - optional
+          output_location: ".next" # Built app content directory for Next.js
+          github_id_token: ${{ steps.idtoken.outputs.result }}
 
   close_pull_request_job:
     if: github.event_name == 'pull_request' && github.event.action == 'closed'
@@ -86,5 +116,4 @@ jobs:
         id: closepullrequest
         uses: Azure/static-web-apps-deploy@v1
         with:
-          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_HAPPY_GROUND_016810010 }}
           action: "close"
