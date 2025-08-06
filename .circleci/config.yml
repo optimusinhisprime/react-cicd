@@ -1,0 +1,67 @@
+version: 2.1
+
+executors:
+  node-executor:
+    docker:
+      - image: cimg/node:20.11
+
+jobs:
+  test:
+    executor: node-executor
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - v1-npm-deps-{{ checksum "package-lock.json" }}
+      - run: npm ci
+      - save_cache:
+          paths:
+            - ~/.npm
+          key: v1-npm-deps-{{ checksum "package-lock.json" }}
+      - run: npm test
+
+  build:
+    executor: node-executor
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - v1-npm-deps-{{ checksum "package-lock.json" }}
+      - run: npm ci
+      - run: npm run build
+      - persist_to_workspace:
+          root: .
+          paths:
+            - .next
+            - package.json
+            - next.config.ts
+            - public
+            - node_modules
+
+  deploy:
+    executor: node-executor
+    steps:
+      - attach_workspace:
+          at: .
+      - run:
+          name: Install Azure Static Web Apps CLI
+          command: npm install -g @azure/static-web-apps-cli
+      - run:
+          name: Deploy to Azure Static Web Apps
+          command: |
+            npx swa deploy . --deployment-token $AZURE_STATIC_WEB_APPS_API_TOKEN
+
+workflows:
+  version: 2
+  build_and_deploy:
+    jobs:
+      - test
+      - build:
+          requires:
+            - test
+      - deploy:
+          requires:
+            - build
+          filters:
+            branches:
+              only: main
